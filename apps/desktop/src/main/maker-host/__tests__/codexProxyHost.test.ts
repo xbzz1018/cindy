@@ -3397,36 +3397,39 @@ describe('codex proxy host', () => {
     expect(host.getCodexProxyEndpoint()).toBe(`${XD_GATEWAY_BASE_URL}/v1`);
   });
 
-  it.each([false, true])('uses the selected route capability for saved Responses effort (declared=%s)', async declared => {
+  it('reconciles a saved Responses effort on every catalog refresh without borrowing another route', async () => {
     const host = await freshCodexProxyHost();
     const { buildUserProvider } = await import('@cindy/model-providers');
     const { setCustomProviders } = await import('../active-catalog.js');
     const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
-    setCustomProviders([false, true].map(supportsReasoning => buildUserProvider({
-      id: supportsReasoning ? 'declared-route' : 'unknown-route', name: 'Fixture', runtimes: {
+    const provider = (id: string, efforts: readonly ('high' | 'max')[]) => buildUserProvider({
+      id, name: 'Fixture', runtimes: {
         codex: { baseUrl: 'https://fixture.example/v1', wireProtocol: 'openai-responses', models: [{
-          id: 'same-model', name: 'Same model',
-          ...(supportsReasoning ? { reasoning: true, reasoningEfforts: ['high', 'max'] as const } : {}),
+          id: 'same-model', name: 'Same model', reasoning: true, reasoningEfforts: [...efforts],
         }] },
       },
-    })));
+    });
     mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
       url: 'http://127.0.0.1:43210', dispose: vi.fn(async () => undefined),
     });
     host.setCodexProxyAuthInjection('env-key');
     host.registerComposed('effort-session', 'effort-thread', '');
-    setSessionProvider('effort-session', declared ? 'declared-route' : 'unknown-route');
+    setSessionProvider('effort-session', 'selected-route');
     try {
       await host.ensureCodexProxyReady();
       const original = { model: 'same-model', input: [], reasoning: { effort: 'max', summary: 'auto' } };
-      let current: unknown = original;
-      for (const transform of mockState.createAnthropicCompatProxy.mock.calls[0][0].transformRequest) {
-        const next = transform(current, { method: 'POST', url: '/responses', headers: { 'thread-id': 'effort-thread' } });
-        if (next !== null && next !== undefined) current = next;
+      for (const efforts of [['high', 'max'], ['high'], [], ['high', 'max']] as const) {
+        setCustomProviders([provider('other-route', ['high', 'max']), provider('selected-route', efforts)]);
+        let current: unknown = original;
+        for (const transform of mockState.createAnthropicCompatProxy.mock.calls[0][0].transformRequest) {
+          const next = transform(current, { method: 'POST', url: '/responses', headers: { 'thread-id': 'effort-thread' } });
+          if (next !== null && next !== undefined) current = next;
+        }
+        expect(current).toHaveProperty('reasoning.summary', 'auto');
+        if (!efforts.length) expect(current).not.toHaveProperty('reasoning.effort');
+        else expect(current).toHaveProperty('reasoning.effort', efforts[efforts.length - 1]);
+        expect(original.reasoning.effort).toBe('max');
       }
-      expect(current).toMatchObject({ reasoning: declared ? original.reasoning : { summary: 'auto' } });
-      if (!declared) expect(current).not.toHaveProperty('reasoning.effort');
-      expect(original.reasoning.effort).toBe('max');
     } finally {
       clearSessionProvider('effort-session');
       setCustomProviders([]);

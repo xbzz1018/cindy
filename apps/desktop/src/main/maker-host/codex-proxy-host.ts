@@ -2,6 +2,7 @@ import { createAttachmentRecovery } from './oversized-attachment-recovery.js';
 import { clearCodexTextOnlyPolicies, codexTextOnlyRequestGuard, codexTextOnlyWebSocketTransforms, isCodexTextOnly } from './codex-text-only-policy.js';
 import { resolveConversationSessionHeaders, withChatBridgeUserAgent, overrideHeadersCaseInsensitive } from '@cindy/responses-chat-bridge';
 import { providerModelRecord } from '@cindy/model-providers';
+import { reconcileOutboundReasoningEffort } from './outbound-reasoning-effort.js';
 import { createPiProviderFetch, handlePiProviderRequest, invocationModelRecord, nativeBridgeApiKey, readBoundedResponseText, requiresNativeProviderAuth } from './pi-provider-transport.js';
 import { normalizeProviderRequest, normalizeMiniMaxResponsesReasoning } from '@cindy/model-compat';
 import { createCodexResponsesCompatibilityAdapter, sanitizeXaiTools, hasCacheOnlySearchProhibition, sanitizeByteDanceSeedTools, normalizeByteDanceSeedInput, sanitizeByteDanceSeedReasoning, normalizeStrictGatewayHistory, sanitizeDeepSeekV4CustomTools } from '@cindy/model-compat';
@@ -533,7 +534,7 @@ function applyReasoningEffortOverride(
 }
 
 /** Saved harness preferences are not a capability declaration for this route. */
-function omitUndeclaredReasoningEffort(
+function reconcileProviderReasoningEffort(
   body: Record<string, unknown>,
   providerId: string,
   modelId: string,
@@ -542,7 +543,9 @@ function omitUndeclaredReasoningEffort(
     ?.models.codex?.find(candidate => candidate.id === modelId);
   // No catalog row can also mean an internal harness model outside our directory.
   // Only a resolved model is authoritative here; never borrow another provider's row.
-  return model?.efforts?.length === 0 ? applyReasoningEffortOverride(body, null) : body;
+  if (!model?.efforts || !isPlainObject(body.reasoning) || !Object.hasOwn(body.reasoning, 'effort')) return body;
+  const effort = reconcileOutboundReasoningEffort(body.reasoning.effort, model.efforts);
+  return effort === body.reasoning.effort ? body : applyReasoningEffortOverride(body, effort ?? null);
 }
 
 function observedReasoningEffort(body: Record<string, unknown>): string | undefined {
@@ -1227,7 +1230,7 @@ function prepareLocalBridgeBody(opts: PrepareLocalBridgeBodyOptions): unknown {
   if (isPlainObject(body)) {
     body = applyReasoningEffortOverride(body, opts.reasoningEffortOverride);
     if (isPlainObject(body) && typeof body.model === 'string') {
-      body = omitUndeclaredReasoningEffort(body, opts.providerId, body.model);
+      body = reconcileProviderReasoningEffort(body, opts.providerId, body.model);
     }
   }
   if (opts.instructions && isPlainObject(body)) {
@@ -2127,7 +2130,7 @@ function createProviderModelRewriteTransform(
         context.sessionId, context.subagentRoute,
         frozenAuthInjection ?? getCodexProxyAuthInjection(),
       )) {
-        const normalized = omitUndeclaredReasoningEffort(body, context.providerId, context.catalogModel);
+        const normalized = reconcileProviderReasoningEffort(body, context.providerId, context.catalogModel);
         if (normalized !== body) {
           // Keep this result even when the model id itself needs no wire rewrite.
           const rewritten = context.subagentRoute
