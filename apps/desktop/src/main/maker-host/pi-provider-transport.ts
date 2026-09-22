@@ -269,7 +269,7 @@ export function createPiProviderFetch(options: PiProviderTransportOptions): type
       ...(!['google-generative-ai', 'google-vertex', 'bedrock-converse-stream'].includes(model.api)
         ? { fetch: diagnosticFetch } : {}),
       signal, maxRetries: 0,
-      reasoning: request.reasoning?.effort && request.reasoning.effort !== 'none'
+      reasoning: options.row.efforts.length > 0 && request.reasoning?.effort && request.reasoning.effort !== 'none'
         ? request.reasoning.effort as ThinkingLevel : undefined,
       maxTokens: typeof request.max_output_tokens === 'number' ? Math.min(request.max_output_tokens, model.maxTokens) : model.maxTokens,
     });

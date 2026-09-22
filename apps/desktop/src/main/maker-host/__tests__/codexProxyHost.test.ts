@@ -3397,6 +3397,42 @@ describe('codex proxy host', () => {
     expect(host.getCodexProxyEndpoint()).toBe(`${XD_GATEWAY_BASE_URL}/v1`);
   });
 
+  it.each([false, true])('uses the selected route capability for saved Responses effort (declared=%s)', async declared => {
+    const host = await freshCodexProxyHost();
+    const { buildUserProvider } = await import('@cindy/model-providers');
+    const { setCustomProviders } = await import('../active-catalog.js');
+    const { setSessionProvider, clearSessionProvider } = await import('../session-provider-store.js');
+    setCustomProviders([false, true].map(supportsReasoning => buildUserProvider({
+      id: supportsReasoning ? 'declared-route' : 'unknown-route', name: 'Fixture', runtimes: {
+        codex: { baseUrl: 'https://fixture.example/v1', wireProtocol: 'openai-responses', models: [{
+          id: 'same-model', name: 'Same model',
+          ...(supportsReasoning ? { reasoning: true, reasoningEfforts: ['high', 'max'] as const } : {}),
+        }] },
+      },
+    })));
+    mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
+      url: 'http://127.0.0.1:43210', dispose: vi.fn(async () => undefined),
+    });
+    host.setCodexProxyAuthInjection('env-key');
+    host.registerComposed('effort-session', 'effort-thread', '');
+    setSessionProvider('effort-session', declared ? 'declared-route' : 'unknown-route');
+    try {
+      await host.ensureCodexProxyReady();
+      const original = { model: 'same-model', input: [], reasoning: { effort: 'max', summary: 'auto' } };
+      let current: unknown = original;
+      for (const transform of mockState.createAnthropicCompatProxy.mock.calls[0][0].transformRequest) {
+        const next = transform(current, { method: 'POST', url: '/responses', headers: { 'thread-id': 'effort-thread' } });
+        if (next !== null && next !== undefined) current = next;
+      }
+      expect(current).toMatchObject({ reasoning: declared ? original.reasoning : { summary: 'auto' } });
+      if (!declared) expect(current).not.toHaveProperty('reasoning.effort');
+      expect(original.reasoning.effort).toBe('max');
+    } finally {
+      clearSessionProvider('effort-session');
+      setCustomProviders([]);
+    }
+  });
+
   it('registers and unregisters composed prompt text by session id', async () => {
     const host = await freshCodexProxyHost();
     mockState.createAnthropicCompatProxy.mockResolvedValueOnce({
@@ -5817,7 +5853,7 @@ describe('codex proxy host', () => {
         runtimes: {
           codex: {
             baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-            models: [{ id: 'production-deployment', name: 'Production Deployment' }],
+            models: [{ id: 'production-deployment', name: 'Production Deployment', reasoning: true, reasoningEfforts: ['high'] }],
           },
         },
       }),
@@ -5887,7 +5923,7 @@ describe('codex proxy host', () => {
         runtimes: {
           codex: {
             baseUrl: 'https://gateway.volces.com/api/v3',
-            models: [{ id: 'production-deployment', name: 'Production Deployment' }],
+            models: [{ id: 'production-deployment', name: 'Production Deployment', reasoning: true, reasoningEfforts: ['high'] }],
           },
         },
       }),
@@ -6156,7 +6192,7 @@ describe('codex proxy host', () => {
         runtimes: {
           codex: {
             baseUrl,
-            models: [{ id: 'MiniMax-M3', name: 'MiniMax M3' }],
+            models: [{ id: 'MiniMax-M3', name: 'MiniMax M3', reasoning: true, reasoningEfforts: ['high'] }],
           },
         },
       }),
@@ -6221,7 +6257,7 @@ describe('codex proxy host', () => {
         runtimes: {
           codex: {
             baseUrl: 'https://example.com/v1',
-            models: [{ id: 'custom-model', name: 'Custom Model' }],
+            models: [{ id: 'custom-model', name: 'Custom Model', reasoning: true, reasoningEfforts: ['xhigh'] }],
           },
         },
       }),

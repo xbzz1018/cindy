@@ -532,6 +532,19 @@ function applyReasoningEffortOverride(
   return next;
 }
 
+/** Saved harness preferences are not a capability declaration for this route. */
+function omitUndeclaredReasoningEffort(
+  body: Record<string, unknown>,
+  providerId: string,
+  modelId: string,
+): Record<string, unknown> {
+  const model = getActiveCatalog().providers.find(provider => provider.id === providerId)
+    ?.models.codex?.find(candidate => candidate.id === modelId);
+  // No catalog row can also mean an internal harness model outside our directory.
+  // Only a resolved model is authoritative here; never borrow another provider's row.
+  return model?.efforts?.length === 0 ? applyReasoningEffortOverride(body, null) : body;
+}
+
 function observedReasoningEffort(body: Record<string, unknown>): string | undefined {
   if (!isPlainObject(body.reasoning) || typeof body.reasoning.effort !== 'string') {
     return undefined;
@@ -1213,6 +1226,9 @@ function prepareLocalBridgeBody(opts: PrepareLocalBridgeBodyOptions): unknown {
   }
   if (isPlainObject(body)) {
     body = applyReasoningEffortOverride(body, opts.reasoningEffortOverride);
+    if (isPlainObject(body) && typeof body.model === 'string') {
+      body = omitUndeclaredReasoningEffort(body, opts.providerId, body.model);
+    }
   }
   if (opts.instructions && isPlainObject(body)) {
     const existing = body.instructions;
@@ -2101,8 +2117,26 @@ function createMiniMaxResponsesCompatTransform(): RequestTransform {
   };
 }
 
-function createProviderModelRewriteTransform(): RequestTransform {
+function createProviderModelRewriteTransform(
+  frozenAuthInjection?: CodexProxyAuthInjection,
+): RequestTransform {
   return (body, ctx) => {
+    if (isPlainObject(body) && typeof body.model === 'string') {
+      const context = providerContextForRequest(ctx.headers, body.model);
+      if (context.providerId && explicitProviderRouteIsAdopted(
+        context.sessionId, context.subagentRoute,
+        frozenAuthInjection ?? getCodexProxyAuthInjection(),
+      )) {
+        const normalized = omitUndeclaredReasoningEffort(body, context.providerId, context.catalogModel);
+        if (normalized !== body) {
+          // Keep this result even when the model id itself needs no wire rewrite.
+          const rewritten = context.subagentRoute
+            ? rewriteProviderModelIdInBody(context.providerId, 'codex', normalized)
+            : rewriteSessionModelIdForRoute(context.sessionId!, 'codex', normalized);
+          return rewritten ?? normalized;
+        }
+      }
+    }
     if (isPlainObject(body) && typeof body.model === 'string') {
       const subagentRoute = subagentRouteFromHeaders(ctx.headers);
       if (subagentRoute) {
@@ -2951,7 +2985,7 @@ function createTransformRequestChain(
     createGatewayGrokResponsesCompatTransform(frozenAuthInjection),
     createByteDanceSeedResponsesCompatTransform(),
     createMiniMaxResponsesCompatTransform(),
-    createProviderModelRewriteTransform(),
+    createProviderModelRewriteTransform(frozenAuthInjection),
     providerRequestTransform,
     // 视觉桥透明替换（层 A，Responses 格式）：controller 未注入时短路透传，零干扰；
     // 注入后把纯文本模型请求 input[] 里的 input_image 转成文字描述。放在 strip 之前与
